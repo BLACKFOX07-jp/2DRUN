@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Monochrome Runner - Triple Jump</title>
+    <style>
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { 
+            margin: 0; background: #000; color: #fff; 
+            font-family: 'Courier New', monospace; 
+            overflow: hidden; touch-action: none;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            height: 100vh; width: 100vw;
+        }
+        canvas { 
+            border: 2px solid #fff; background: #000; 
+            max-width: 95vw; max-height: 70vh;
+            image-rendering: pixelated; 
+        }
+        .ui-container {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            pointer-events: none; z-index: 10;
+        }
+        .overlay {
+            background: rgba(0,0,0,0.95); border: 3px solid #fff;
+            padding: 30px; text-align: center; pointer-events: auto;
+            min-width: 280px;
+        }
+        .hidden { display: none !important; }
+        button {
+            background: #fff; color: #000; border: none;
+            padding: 15px 40px; font-family: 'Courier New', monospace;
+            font-weight: bold; font-size: 1.5em; cursor: pointer;
+            margin-top: 20px; text-transform: uppercase;
+        }
+        #info-bar { margin-bottom: 10px; font-size: 16px; letter-spacing: 1px; }
+        #landscape-msg { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:100; justify-content:center; align-items:center; text-align:center; padding:20px; }
+        @media screen and (orientation: portrait) { #landscape-msg { display: flex; } }
+    </style>
+</head>
+<body>
+
+    <div id="landscape-msg">横画面（Landscape）でプレイしてください</div>
+
+    <div id="info-bar">
+        <span id="stage-label">STAGE 1</span> | PROGRESS: <span id="dist-label">0%</span>
+    </div>
+    
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="ui-container">
+        <div id="overlay" class="overlay">
+            <h1 id="title">MONOCHROME</h1>
+            <p id="sub-msg">TRIPLE JUMP UNLOCKED</p>
+            <button id="action-btn">START</button>
+        </div>
+    </div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const actionBtn = document.getElementById('action-btn');
+const overlay = document.getElementById('overlay');
+const titleEl = document.getElementById('title');
+
+canvas.width = 800;
+canvas.height = 400;
+
+const GROUND_Y = 340;
+const GRAVITY = 0.75; 
+const JUMP_FORCE = -13;
+const STAGE_SEC = 40; 
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playTone(freq, type, duration, vol = 0.05) {
+    try {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    } catch(e) {}
+}
+
+function generateObstacles(speed, level) {
+    const items = [];
+    const dist = speed * 60 * STAGE_SEC; 
+    let lastX = 800; 
+    while(lastX < dist - 1200) {
+        // 難易度下方修正: 間隔を少し広く（+50px分）
+        lastX += (230 + Math.random() * 350) / (1 + level * 0.25);
+        
+        const r = Math.random();
+        if(r < 0.4) {
+            items.push({x: lastX, y: GROUND_Y - 45, w: 30, h: 45});
+        } else if(r < 0.7) {
+            // 空中（三段ジャンプで避けやすい高さに）
+            items.push({x: lastX, y: GROUND_Y - (Math.random() > 0.5 ? 110 : 190), w: 55, h: 20});
+        } else {
+            // 連続配置も少し隙間を空ける
+            items.push({x: lastX, y: GROUND_Y - 35, w: 20, h: 35});
+            items.push({x: lastX + 130, y: GROUND_Y - 35, w: 20, h: 35});
+            lastX += 150;
+        }
+    }
+    return { dist, items };
+}
+
+let stageData = [];
+function initStages() {
+    stageData = [
+        { name: "1: CHILL", speed: 6.5, data: generateObstacles(6.5, 1) },
+        { name: "2: FLOW", speed: 8, data: generateObstacles(8, 2) },
+        { name: "3: PULSE", speed: 9.5, data: generateObstacles(9.5, 3) },
+        { name: "4: DRIVE", speed: 11, data: generateObstacles(11, 4) },
+        { name: "5: ZEN", speed: 13, data: generateObstacles(13, 5) }
+    ];
+}
+
+const player = {
+    x: 120, y: GROUND_Y - 40, w: 20, h: 40, vy: 0, jumps: 0,
+    update() {
+        this.vy += GRAVITY;
+        this.y += this.vy;
+        if(this.y + this.h > GROUND_Y) {
+            this.y = GROUND_Y - this.h;
+            this.vy = 0; this.jumps = 0;
+        }
+    },
+    jump() {
+        // 三段ジャンプ機能: 制限を3に
+        if(this.jumps < 3) {
+            this.vy = JUMP_FORCE;
+            this.jumps++;
+            playTone(150 + this.jumps * 120, 'square', 0.1);
+        }
+    },
+    draw() {
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(this.x+5, this.y, 10, 10);
+        ctx.fillRect(this.x+9, this.y+10, 2, 18);
+        const walk = (Math.floor(worldOffset / 8) % 2 === 0) || this.jumps > 0;
+        ctx.fillRect(this.x+(walk?3:14), this.y+28, 3, 12);
+        ctx.fillRect(this.x+(walk?14:3), this.y+28, 3, 8);
+        
+        // 三段ジャンプ中の視覚効果（残像っぽく一瞬光らせる）
+        if(this.jumps === 3) {
+            ctx.strokeStyle = "rgba(255,255,255,0.5)";
+            ctx.strokeRect(this.x, this.y, this.w, this.h);
+        }
+    }
+};
+
+let currentStage = 0;
+let worldOffset = 0;
+let state = 'title'; 
+
+function gameLoop() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    if(state === 'playing' || state === 'clear') {
+        const s = stageData[currentStage];
+        if(state === 'playing') worldOffset += s.speed;
+        player.update();
+
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, GROUND_Y, canvas.width, 2);
+        
+        s.data.items.forEach(o => {
+            const sx = o.x - worldOffset;
+            if(sx > -100 && sx < canvas.width + 100) {
+                ctx.fillRect(sx, o.y, o.w, o.h);
+                // 当たり判定を少しだけ甘く（マージン+4）
+                if(state === 'playing' && player.x + 6 < sx+o.w && player.x+player.w - 6 > sx && player.y + 4 < o.y+o.h && player.y+player.h - 2 > o.y) {
+                    state = 'over';
+                    overlay.classList.remove('hidden');
+                    titleEl.innerText = "FAILED";
+                    actionBtn.innerText = "RETRY";
+                    playTone(60, 'sawtooth', 0.5);
+                }
+            }
+        });
+
+        const gx = s.data.dist - worldOffset;
+        if(gx < canvas.width) {
+            ctx.fillRect(gx, GROUND_Y-250, 5, 250);
+            ctx.fillRect(gx, GROUND_Y-250, 55, 35);
+        }
+
+        if(worldOffset > s.data.dist) {
+            state = 'clear';
+            overlay.classList.remove('hidden');
+            titleEl.innerText = "STAGE CLEAR";
+            actionBtn.innerText = "NEXT";
+            playTone(500, 'sine', 0.5);
+        }
+    }
+
+    player.draw();
+    if(state === 'playing') {
+        const progress = Math.min(100, Math.floor((worldOffset/stageData[currentStage].data.dist)*100));
+        document.getElementById('dist-label').innerText = progress + "%";
+    }
+    requestAnimationFrame(gameLoop);
+}
+
+function handleAction(e) {
+    if(e) e.preventDefault();
+    if(e) e.stopPropagation();
+    
+    overlay.classList.add('hidden');
+    
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+
+    if(state === 'title' || state === 'over') {
+        worldOffset = 0; player.y = GROUND_Y - 40; player.jumps = 0;
+        state = 'playing';
+        document.getElementById('stage-label').innerText = `STAGE ${currentStage + 1}`;
+    } else if(state === 'clear') {
+        currentStage++;
+        if(currentStage >= stageData.length) {
+            state = 'all-clear';
+            overlay.classList.remove('hidden');
+            titleEl.innerText = "CONGRATS!";
+            actionBtn.innerText = "RESTART";
+            currentStage = 0; initStages();
+        } else {
+            worldOffset = 0; state = 'playing';
+            document.getElementById('stage-label').innerText = `STAGE ${currentStage + 1}`;
+        }
+    } else if(state === 'all-clear') {
+        state = 'title';
+        overlay.classList.remove('hidden');
+        titleEl.innerText = "MONOCHROME";
+        actionBtn.innerText = "START";
+    }
+}
+
+window.addEventListener('touchstart', (e) => {
+    if(e.target.id === 'action-btn') return;
+    if(state === 'playing') player.jump();
+    e.preventDefault();
+}, {passive: false});
+
+window.addEventListener('keydown', e => {
+    if(e.code === 'Space' && state === 'playing') player.jump();
+    if(e.code === 'Enter') handleAction();
+});
+
+actionBtn.addEventListener('click', handleAction);
+actionBtn.addEventListener('touchstart', handleAction, {passive: false});
+
+initStages();
+gameLoop();
+</script>
+</body>
+</html>
