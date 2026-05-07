@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Monochrome Runner - Triple Jump</title>
+    <title>2D RUN - Extreme</title>
     <style>
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
@@ -24,18 +24,25 @@
             pointer-events: none; z-index: 10;
         }
         .overlay {
-            background: rgba(0,0,0,0.95); border: 3px solid #fff;
-            padding: 30px; text-align: center; pointer-events: auto;
-            min-width: 280px;
+            background: rgba(0,0,0,0.95); border: 4px solid #fff;
+            padding: 40px; text-align: center; pointer-events: auto;
+            min-width: 350px; box-shadow: 0 0 20px rgba(255,255,255,0.2);
         }
         .hidden { display: none !important; }
+        .btn-group { display: flex; flex-direction: column; gap: 15px; align-items: center; margin-top: 25px; }
         button {
             background: #fff; color: #000; border: none;
             padding: 15px 40px; font-family: 'Courier New', monospace;
-            font-weight: bold; font-size: 1.5em; cursor: pointer;
-            margin-top: 20px; text-transform: uppercase;
+            font-weight: bold; font-size: 1.2em; cursor: pointer;
+            text-transform: uppercase; width: 100%; transition: 0.2s;
         }
-        #info-bar { margin-bottom: 10px; font-size: 16px; letter-spacing: 1px; }
+        button:hover { background: #bbb; transform: scale(1.05); }
+        #info-bar { 
+            width: 800px; max-width: 95vw;
+            display: flex; justify-content: space-between;
+            margin-bottom: 10px; font-size: 18px; font-weight: bold;
+        }
+        .title-text { font-size: 64px; margin: 0; letter-spacing: 10px; text-shadow: 4px 4px #444; }
         #landscape-msg { display: none; position: fixed; top:0; left:0; width:100%; height:100%; background:#000; z-index:100; justify-content:center; align-items:center; text-align:center; padding:20px; }
         @media screen and (orientation: portrait) { #landscape-msg { display: flex; } }
     </style>
@@ -45,25 +52,32 @@
     <div id="landscape-msg">横画面（Landscape）でプレイしてください</div>
 
     <div id="info-bar">
-        <span id="stage-label">STAGE 1</span> | PROGRESS: <span id="dist-label">0%</span>
+        <div><span id="stage-label">STAGE 1</span></div>
+        <div>COINS: <span id="coin-label">0</span></div>
+        <div><span id="dist-label">0%</span></div>
     </div>
     
     <canvas id="gameCanvas"></canvas>
 
     <div class="ui-container">
         <div id="overlay" class="overlay">
-            <h1 id="title">MONOCHROME</h1>
-            <p id="sub-msg">TRIPLE JUMP UNLOCKED</p>
-            <button id="action-btn">START</button>
+            <h1 class="title-text">2D RUN</h1>
+            <p id="sub-msg" style="margin-top:10px;">COLLECT COINS & SURVIVE</p>
+            <div class="btn-group">
+                <button id="start-new-btn">START GAME</button>
+                <button id="continue-btn" class="hidden">CONTINUE</button>
+            </div>
         </div>
     </div>
 
 <script>
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const actionBtn = document.getElementById('action-btn');
+const startNewBtn = document.getElementById('start-new-btn');
+const continueBtn = document.getElementById('continue-btn');
 const overlay = document.getElementById('overlay');
-const titleEl = document.getElementById('title');
+const titleEl = document.querySelector('.title-text');
+const subMsgEl = document.getElementById('sub-msg');
 
 canvas.width = 800;
 canvas.height = 400;
@@ -71,54 +85,98 @@ canvas.height = 400;
 const GROUND_Y = 340;
 const GRAVITY = 0.75; 
 const JUMP_FORCE = -13;
-const STAGE_SEC = 40; 
+const STAGE_SEC = 50; 
+const GAME_SPEED = 6.5;
 
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-function playTone(freq, type, duration, vol = 0.05) {
-    try {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = type;
-        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
-        osc.connect(gain); gain.connect(audioCtx.destination);
-        osc.start(); osc.stop(audioCtx.currentTime + duration);
-    } catch(e) {}
+// --- セーブ管理 (ステージ & コイン) ---
+const STAGE_KEY = "2drun_stage";
+const COIN_KEY = "2drun_coins";
+
+let totalCoins = parseInt(localStorage.getItem(COIN_KEY)) || 0;
+document.getElementById('coin-label').innerText = totalCoins;
+
+function saveProgress(stageIdx) {
+    localStorage.setItem(STAGE_KEY, stageIdx);
+    localStorage.setItem(COIN_KEY, totalCoins);
+}
+function getSavedStage() {
+    const s = localStorage.getItem(STAGE_KEY);
+    return s === null ? 0 : parseInt(s, 10);
+}
+function resetSave() {
+    localStorage.removeItem(STAGE_KEY);
+    // コイン累計はリセットしない（お好みで）
 }
 
-function generateObstacles(speed, level) {
+// --- 音声 ---
+let audioCtx;
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playTone(freq, type, duration, vol = 0.05) {
+    if (!audioCtx) return;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+    gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + duration);
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.start(); osc.stop(audioCtx.currentTime + duration);
+}
+
+// --- 背景・オブジェクト生成 ---
+function generateScenery() {
+    const scenery = [];
+    for(let i=0; i<15; i++) scenery.push({ x: i * 1000 + 400, type: 'castle' });
+    for(let i=0; i<60; i++) scenery.push({ x: i * 250 + Math.random()*200, type: Math.random() > 0.4 ? 'tree' : 'grass' });
+    return scenery;
+}
+
+function generateObstaclesAndCoins(level) {
     const items = [];
-    const dist = speed * 60 * STAGE_SEC; 
+    const coins = [];
+    const dist = GAME_SPEED * 60 * STAGE_SEC; 
     let lastX = 800; 
-    while(lastX < dist - 1200) {
-        // 難易度下方修正: 間隔を少し広く（+50px分）
-        lastX += (230 + Math.random() * 350) / (1 + level * 0.25);
+    
+    while(lastX < dist - 1000) {
+        // 難易度向上：間隔をより狭く、ランダム性を強化
+        const gapBase = Math.max(120, 260 - (level * 25));
+        lastX += gapBase + Math.random() * 250;
         
         const r = Math.random();
-        if(r < 0.4) {
+        // 障害物の配置
+        if(level >= 2 && r < 0.4) {
+            // 連続トラップ
             items.push({x: lastX, y: GROUND_Y - 45, w: 30, h: 45});
-        } else if(r < 0.7) {
-            // 空中（三段ジャンプで避けやすい高さに）
-            items.push({x: lastX, y: GROUND_Y - (Math.random() > 0.5 ? 110 : 190), w: 55, h: 20});
+            items.push({x: lastX + 100, y: GROUND_Y - 45, w: 30, h: 45});
+            lastX += 120;
+        } else if(level >= 3 && r < 0.7) {
+            // 高い壁（3段ジャンプ必須）
+            items.push({x: lastX, y: GROUND_Y - 140, w: 20, h: 140});
         } else {
-            // 連続配置も少し隙間を空ける
-            items.push({x: lastX, y: GROUND_Y - 35, w: 20, h: 35});
-            items.push({x: lastX + 130, y: GROUND_Y - 35, w: 20, h: 35});
-            lastX += 150;
+            items.push({x: lastX, y: GROUND_Y - 60, w: 40, h: 60});
         }
+
+        // コインの配置（障害物の近くや空中に）
+        coins.push({x: lastX - 50, y: GROUND_Y - 100 - Math.random() * 100, collected: false});
+        if(Math.random() > 0.5) coins.push({x: lastX + 50, y: GROUND_Y - 150, collected: false});
     }
-    return { dist, items };
+    return { dist, items, coins };
 }
 
 let stageData = [];
+let backgroundObjects = generateScenery();
+let currentCoins = 0;
+
 function initStages() {
     stageData = [
-        { name: "1: CHILL", speed: 6.5, data: generateObstacles(6.5, 1) },
-        { name: "2: FLOW", speed: 8, data: generateObstacles(8, 2) },
-        { name: "3: PULSE", speed: 9.5, data: generateObstacles(9.5, 3) },
-        { name: "4: DRIVE", speed: 11, data: generateObstacles(11, 4) },
-        { name: "5: ZEN", speed: 13, data: generateObstacles(13, 5) }
+        { data: generateObstaclesAndCoins(1) },
+        { data: generateObstaclesAndCoins(2) },
+        { data: generateObstaclesAndCoins(3) },
+        { data: generateObstaclesAndCoins(4) },
+        { data: generateObstaclesAndCoins(5) }
     ];
 }
 
@@ -133,11 +191,10 @@ const player = {
         }
     },
     jump() {
-        // 三段ジャンプ機能: 制限を3に
         if(this.jumps < 3) {
             this.vy = JUMP_FORCE;
             this.jumps++;
-            playTone(150 + this.jumps * 120, 'square', 0.1);
+            playTone(200 + this.jumps * 150, 'square', 0.1);
         }
     },
     draw() {
@@ -147,12 +204,6 @@ const player = {
         const walk = (Math.floor(worldOffset / 8) % 2 === 0) || this.jumps > 0;
         ctx.fillRect(this.x+(walk?3:14), this.y+28, 3, 12);
         ctx.fillRect(this.x+(walk?14:3), this.y+28, 3, 8);
-        
-        // 三段ジャンプ中の視覚効果（残像っぽく一瞬光らせる）
-        if(this.jumps === 3) {
-            ctx.strokeStyle = "rgba(255,255,255,0.5)";
-            ctx.strokeRect(this.x, this.y, this.w, this.h);
-        }
     }
 };
 
@@ -160,29 +211,69 @@ let currentStage = 0;
 let worldOffset = 0;
 let state = 'title'; 
 
+function drawBackground() {
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    backgroundObjects.forEach(obj => {
+        let scrollX;
+        if(obj.type === 'castle') {
+            scrollX = (obj.x - worldOffset * 0.2) % 3000;
+            if(scrollX < -400) scrollX += 3000;
+            ctx.strokeRect(scrollX, GROUND_Y - 180, 120, 180);
+            ctx.strokeRect(scrollX + 30, GROUND_Y - 240, 30, 60);
+        } else if(obj.type === 'tree') {
+            scrollX = (obj.x - worldOffset * 0.5) % 1500;
+            ctx.beginPath(); ctx.moveTo(scrollX, GROUND_Y); ctx.lineTo(scrollX + 20, GROUND_Y - 80); ctx.lineTo(scrollX + 40, GROUND_Y); ctx.stroke();
+        } else {
+            scrollX = (obj.x - worldOffset * 0.8) % 1000;
+            ctx.fillRect(scrollX, GROUND_Y - 15, 3, 15);
+        }
+    });
+}
+
 function gameLoop() {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawBackground();
 
     if(state === 'playing' || state === 'clear') {
         const s = stageData[currentStage];
-        if(state === 'playing') worldOffset += s.speed;
+        if(state === 'playing') worldOffset += GAME_SPEED;
         player.update();
 
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, GROUND_Y, canvas.width, 2);
         
+        // 障害物
         s.data.items.forEach(o => {
             const sx = o.x - worldOffset;
             if(sx > -100 && sx < canvas.width + 100) {
                 ctx.fillRect(sx, o.y, o.w, o.h);
-                // 当たり判定を少しだけ甘く（マージン+4）
                 if(state === 'playing' && player.x + 6 < sx+o.w && player.x+player.w - 6 > sx && player.y + 4 < o.y+o.h && player.y+player.h - 2 > o.y) {
                     state = 'over';
-                    overlay.classList.remove('hidden');
-                    titleEl.innerText = "FAILED";
-                    actionBtn.innerText = "RETRY";
-                    playTone(60, 'sawtooth', 0.5);
+                    playTone(100, 'sawtooth', 0.4);
+                    saveProgress(currentStage);
+                    showMenu("FAILED", "RETRY STAGE " + (currentStage+1));
+                }
+            }
+        });
+
+        // コイン
+        s.data.coins.forEach(c => {
+            if(!c.collected) {
+                const cx = c.x - worldOffset;
+                if(cx > -50 && cx < canvas.width + 50) {
+                    // コインの描画（回転アニメーション風）
+                    const rotate = Math.sin(Date.now() * 0.01) * 8;
+                    ctx.fillStyle = "#fff";
+                    ctx.fillRect(cx + 4 - rotate/2, c.y, rotate || 1, 15);
+                    
+                    if(state === 'playing' && player.x < cx+15 && player.x+player.w > cx && player.y < c.y+15 && player.y+player.h > c.y) {
+                        c.collected = true;
+                        totalCoins++;
+                        document.getElementById('coin-label').innerText = totalCoins;
+                        playTone(800, 'sine', 0.1, 0.03);
+                    }
                 }
             }
         });
@@ -190,15 +281,21 @@ function gameLoop() {
         const gx = s.data.dist - worldOffset;
         if(gx < canvas.width) {
             ctx.fillRect(gx, GROUND_Y-250, 5, 250);
-            ctx.fillRect(gx, GROUND_Y-250, 55, 35);
+            ctx.strokeRect(gx, GROUND_Y-250, 60, 40);
         }
 
         if(worldOffset > s.data.dist) {
             state = 'clear';
-            overlay.classList.remove('hidden');
-            titleEl.innerText = "STAGE CLEAR";
-            actionBtn.innerText = "NEXT";
-            playTone(500, 'sine', 0.5);
+            playTone(600, 'sine', 0.5);
+            const nextIdx = currentStage + 1;
+            if(nextIdx >= stageData.length) {
+                state = 'all-clear';
+                resetSave();
+                showMenu("ALL CLEAR!", "START FROM STAGE 1");
+            } else {
+                saveProgress(nextIdx);
+                showMenu("STAGE CLEAR", "GO TO STAGE " + (nextIdx + 1));
+            }
         }
     }
 
@@ -210,53 +307,62 @@ function gameLoop() {
     requestAnimationFrame(gameLoop);
 }
 
-function handleAction(e) {
-    if(e) e.preventDefault();
-    if(e) e.stopPropagation();
-    
-    overlay.classList.add('hidden');
-    
-    if(audioCtx.state === 'suspended') audioCtx.resume();
+function showMenu(title, btnText) {
+    overlay.classList.remove('hidden');
+    titleEl.innerText = title;
+    startNewBtn.innerText = btnText;
+    if(state === 'title') updateTitleButtons();
+    else continueBtn.classList.add('hidden');
+}
 
-    if(state === 'title' || state === 'over') {
-        worldOffset = 0; player.y = GROUND_Y - 40; player.jumps = 0;
-        state = 'playing';
-        document.getElementById('stage-label').innerText = `STAGE ${currentStage + 1}`;
-    } else if(state === 'clear') {
-        currentStage++;
-        if(currentStage >= stageData.length) {
-            state = 'all-clear';
-            overlay.classList.remove('hidden');
-            titleEl.innerText = "CONGRATS!";
-            actionBtn.innerText = "RESTART";
-            currentStage = 0; initStages();
-        } else {
-            worldOffset = 0; state = 'playing';
-            document.getElementById('stage-label').innerText = `STAGE ${currentStage + 1}`;
-        }
-    } else if(state === 'all-clear') {
-        state = 'title';
-        overlay.classList.remove('hidden');
-        titleEl.innerText = "MONOCHROME";
-        actionBtn.innerText = "START";
+function updateTitleButtons() {
+    const saved = getSavedStage();
+    titleEl.innerText = "2D RUN";
+    if(saved > 0) {
+        continueBtn.classList.remove('hidden');
+        continueBtn.innerText = "CONTINUE ST. " + (saved + 1);
+        startNewBtn.innerText = "NEW GAME";
+    } else {
+        continueBtn.classList.add('hidden');
+        startNewBtn.innerText = "START GAME";
     }
 }
 
-window.addEventListener('touchstart', (e) => {
-    if(e.target.id === 'action-btn') return;
-    if(state === 'playing') player.jump();
-    e.preventDefault();
-}, {passive: false});
+function startLevel(idx) {
+    initAudio();
+    currentStage = idx;
+    worldOffset = 0;
+    player.y = GROUND_Y - 40;
+    player.vy = 0;
+    player.jumps = 0;
+    state = 'playing';
+    overlay.classList.add('hidden');
+    document.getElementById('stage-label').innerText = `STAGE ${currentStage + 1}`;
+}
+
+function handleMainAction() {
+    if (!overlay.classList.contains('hidden')) {
+        if(state === 'title' || state === 'all-clear') { resetSave(); startLevel(0); }
+        else if(state === 'over') startLevel(currentStage);
+        else if(state === 'clear') startLevel(currentStage + 1);
+    }
+}
+
+startNewBtn.addEventListener('click', (e) => { e.stopPropagation(); handleMainAction(); });
+continueBtn.addEventListener('click', (e) => { e.stopPropagation(); startLevel(getSavedStage()); });
 
 window.addEventListener('keydown', e => {
-    if(e.code === 'Space' && state === 'playing') player.jump();
-    if(e.code === 'Enter') handleAction();
+    if(e.code === 'Space') { e.preventDefault(); if(state === 'playing') player.jump(); }
+    if(e.code === 'Enter') { e.preventDefault(); handleMainAction(); }
 });
 
-actionBtn.addEventListener('click', handleAction);
-actionBtn.addEventListener('touchstart', handleAction, {passive: false});
+window.addEventListener('touchstart', (e) => {
+    if(e.target.tagName === 'BUTTON') return;
+    if(state === 'playing') { player.jump(); e.preventDefault(); }
+}, {passive: false});
 
 initStages();
+updateTitleButtons();
 gameLoop();
 </script>
 </body>
