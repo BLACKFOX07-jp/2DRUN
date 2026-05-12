@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>2D RUN - Extreme</title>
+    <title>2D RUN - Extreme (Sync Speed)</title>
     <style>
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         body { 
@@ -88,7 +88,11 @@ const JUMP_FORCE = -13;
 const STAGE_SEC = 50; 
 const GAME_SPEED = 6.5;
 
-// --- セーブ管理 (ステージ & コイン) ---
+// --- デルタタイム管理 ---
+let lastTime = 0;
+const TARGET_FPS = 60;
+
+// --- セーブ管理 ---
 const STAGE_KEY = "2drun_stage";
 const COIN_KEY = "2drun_coins";
 
@@ -105,7 +109,6 @@ function getSavedStage() {
 }
 function resetSave() {
     localStorage.removeItem(STAGE_KEY);
-    // コイン累計はリセットしない（お好みで）
 }
 
 // --- 音声 ---
@@ -126,7 +129,7 @@ function playTone(freq, type, duration, vol = 0.05) {
     osc.start(); osc.stop(audioCtx.currentTime + duration);
 }
 
-// --- 背景・オブジェクト生成 ---
+// --- 生成ロジック ---
 function generateScenery() {
     const scenery = [];
     for(let i=0; i<15; i++) scenery.push({ x: i * 1000 + 400, type: 'castle' });
@@ -141,25 +144,18 @@ function generateObstaclesAndCoins(level) {
     let lastX = 800; 
     
     while(lastX < dist - 1000) {
-        // 難易度向上：間隔をより狭く、ランダム性を強化
         const gapBase = Math.max(120, 260 - (level * 25));
         lastX += gapBase + Math.random() * 250;
-        
         const r = Math.random();
-        // 障害物の配置
         if(level >= 2 && r < 0.4) {
-            // 連続トラップ
             items.push({x: lastX, y: GROUND_Y - 45, w: 30, h: 45});
             items.push({x: lastX + 100, y: GROUND_Y - 45, w: 30, h: 45});
             lastX += 120;
         } else if(level >= 3 && r < 0.7) {
-            // 高い壁（3段ジャンプ必須）
             items.push({x: lastX, y: GROUND_Y - 140, w: 20, h: 140});
         } else {
             items.push({x: lastX, y: GROUND_Y - 60, w: 40, h: 60});
         }
-
-        // コインの配置（障害物の近くや空中に）
         coins.push({x: lastX - 50, y: GROUND_Y - 100 - Math.random() * 100, collected: false});
         if(Math.random() > 0.5) coins.push({x: lastX + 50, y: GROUND_Y - 150, collected: false});
     }
@@ -182,9 +178,10 @@ function initStages() {
 
 const player = {
     x: 120, y: GROUND_Y - 40, w: 20, h: 40, vy: 0, jumps: 0,
-    update() {
-        this.vy += GRAVITY;
-        this.y += this.vy;
+    update(dt) {
+        // dt (deltaMultiplier) を物理演算に適用
+        this.vy += GRAVITY * dt;
+        this.y += this.vy * dt;
         if(this.y + this.h > GROUND_Y) {
             this.y = GROUND_Y - this.h;
             this.vy = 0; this.jumps = 0;
@@ -231,20 +228,26 @@ function drawBackground() {
     });
 }
 
-function gameLoop() {
+function gameLoop(timeStamp) {
+    // デルタタイム計算
+    if (!lastTime) lastTime = timeStamp;
+    const deltaTime = timeStamp - lastTime;
+    lastTime = timeStamp;
+    // 基準に対する倍率 (60fps = 1.0)。最大値を2.0に制限して異常な飛びを防ぐ
+    const dt = Math.min(deltaTime / (1000 / TARGET_FPS), 2.0);
+
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawBackground();
 
     if(state === 'playing' || state === 'clear') {
         const s = stageData[currentStage];
-        if(state === 'playing') worldOffset += GAME_SPEED;
-        player.update();
+        if(state === 'playing') worldOffset += GAME_SPEED * dt;
+        player.update(dt);
 
         ctx.fillStyle = "#fff";
         ctx.fillRect(0, GROUND_Y, canvas.width, 2);
         
-        // 障害物
         s.data.items.forEach(o => {
             const sx = o.x - worldOffset;
             if(sx > -100 && sx < canvas.width + 100) {
@@ -258,16 +261,13 @@ function gameLoop() {
             }
         });
 
-        // コイン
         s.data.coins.forEach(c => {
             if(!c.collected) {
                 const cx = c.x - worldOffset;
                 if(cx > -50 && cx < canvas.width + 50) {
-                    // コインの描画（回転アニメーション風）
                     const rotate = Math.sin(Date.now() * 0.01) * 8;
                     ctx.fillStyle = "#fff";
                     ctx.fillRect(cx + 4 - rotate/2, c.y, rotate || 1, 15);
-                    
                     if(state === 'playing' && player.x < cx+15 && player.x+player.w > cx && player.y < c.y+15 && player.y+player.h > c.y) {
                         c.collected = true;
                         totalCoins++;
@@ -363,7 +363,7 @@ window.addEventListener('touchstart', (e) => {
 
 initStages();
 updateTitleButtons();
-gameLoop();
+requestAnimationFrame(gameLoop);
 </script>
 </body>
 </html>
